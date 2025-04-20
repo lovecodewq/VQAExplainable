@@ -176,7 +176,7 @@ def InitSynsets(scene_graph, synset_file):
   for rel in scene_graph.relationships:
     rel.synset = [syn_class[sn] for sn in rel.synset]
   for attr in scene_graph.attributes:
-    obj.synset = [syn_class[sn] for sn in attr.synset]
+    attr.synset = [syn_class[sn] for sn in attr.synset]
 
   return scene_graph  
 

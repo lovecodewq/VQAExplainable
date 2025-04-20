@@ -65,7 +65,7 @@ Helper to parse region descriptions.
 """
 def ParseRegionDescriptions(data, image):
   regions = []
-  if data[0].has_key('region_id'):
+  if 'region_id' in data[0]:
     region_id_key = 'region_id'
   else:
     region_id_key = 'id'
@@ -87,7 +87,7 @@ def ParseQA(data, image_map):
         qos.append(QAObject(qo['entity_idx_start'], qo['entity_idx_end'], qo['entity_name'], synset))
     if 'answer_objects' in d:
       for ao in d['answer_objects']:
-        synset = Synset(o['synset_name'], ao['synset_definition'])
+        synset = Synset(ao['synset_name'], ao['synset_definition'])
         aos.append(QAObject(ao['entity_idx_start'], ao['entity_idx_end'], ao['entity_name'], synset))
     qas.append(QA(d['qa_id'], image_map[d['image_id']], d['question'], d['answer'], qos, aos))
   return qas
