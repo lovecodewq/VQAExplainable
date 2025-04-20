@@ -1,0 +1,15 @@
+# VQA model yaml file
+
+batch_size: 32
+learning_rate: 0.0001
+num_epochs: 20
+weight_decay: 0.00001
+
+input_vocab_size: 10000
+answer_vocab_size: 3000
+embedding_size: 300
+hidden_dim: 512
+image_feature_dim: 2048
+
+max_token_length: 14
+k: 36 # number of image regions
