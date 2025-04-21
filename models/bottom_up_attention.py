@@ -1,13 +1,17 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torchvision
 from torchvision import models
 from torchvision.models._utils import IntermediateLayerGetter
 from torchvision.models.detection.rpn import AnchorGenerator, RPNHead, RegionProposalNetwork
 from torchvision.ops import MultiScaleRoIAlign
 from torchvision.models import ResNet101_Weights
 from torchvision.models.detection._utils import BoxCoder
-from fast_rcnn.config import cfg  # your config
+from fast_rcnn.config import cfg
+
+from torchvision.models.detection.roi_heads import RoIHeads, fastrcnn_loss
+
 
 def _init_weights(m):
     if isinstance(m, nn.Linear):
@@ -67,65 +71,84 @@ class BottomUpAttention(nn.Module):
 
         # BoxCoder for targets (match Caffe defaults if you like)
         self.box_coder = BoxCoder(weights=(10.,10.,5.,5.))
-
         # Inference filters
         self.score_thresh = 0.2
         self.max_regions  = 36
+        self.roi_heads = RoIHeads(
+            box_roi_pool       = self.roi_pool,
+            box_head           = None,   # unused by the sampling functions
+            box_predictor      = None,   # unused by the sampling functions
+            fg_iou_thresh      = 0.5,    # Faster‑RCNN defaults
+            bg_iou_thresh      = 0.5,
+            batch_size_per_image = 128,
+            positive_fraction  = 0.25,
+            bbox_reg_weights   = (10.,10.,5.,5.),
+            score_thresh       = self.score_thresh,
+            nms_thresh         = 0.7,
+            detections_per_img = self.max_regions
+        )
 
     def forward(self, images, im_info, gt_targets=None):
-        # Backbone
+        # 1) Backbone
         feats = self.backbone(images.tensors)
         conv4, conv5 = feats['0'], feats['1']
 
-        # RPN
-        _, rpn_losses = self.rpn(
+        # 2) RPN
+        proposals, rpn_losses = self.rpn(
             images, {'0': conv4},
             gt_targets if self.training else None
         )
 
-        # --- PREPEND GT BOXES to each proposal list! ---
-        gt_proposals = []
-        gt_labels = []
-        gt_attributes = []
+        # 3) Sample and label our proposals exactly like the original Faster RCNN:
+        #    - append GTs, match IoU, subsample 25% pos / 75% neg
         if self.training:
-            for tgt in gt_targets:
-                gt_proposals.append(tgt['boxes'])
-                gt_labels.append(tgt['labels'])
-                gt_attributes.append(tgt['attributes'])
-        # RoIAlign + pool → [sum(N_i),2048]
-        roi_feats = self.roi_pool({'1': conv5}, gt_proposals, images.image_sizes)
-        x = self.global_pool(roi_feats).flatten(1)
-        # Heads
-        cls_logits = self.cls_score(x)          # [sum(N_i), num_obj]
-        box_regs   = self.bbox_pred(x)          # [sum(N_i), num_obj*4]
+            proposals, matched_idxs_list, labels_list, regression_targets_list = \
+                self.roi_heads.select_training_samples(proposals, gt_targets)
+        else:
+            # at test time we use all RPN proposals, and no labels/reg targets
+            matched_idxs_list = labels = regression_targets = None
+        # 4) RoIAlign + global pool
+        roi_feats = self.roi_pool({'1': conv5}, proposals, images.image_sizes)
+        x = self.global_pool(roi_feats).flatten(1) # [M, 2048]
+
+        # 5) Detection head predictions
+        cls_logits = self.cls_score(x)      # [M, 1601]
+        box_regs   = self.bbox_pred(x)      # [M, 1601*4]
+
+        losses = {}
         if self.training:
-            # 1) RPN losses
-            losses = {
-                'rpn_obj': rpn_losses['loss_objectness'],
-                'rpn_box': rpn_losses['loss_rpn_box_reg']
-            }
+            # 6a) RPN losses
+            losses['rpn_obj'] = rpn_losses['loss_objectness']
+            losses['rpn_box'] = rpn_losses['loss_rpn_box_reg']
 
-            gt_labels = torch.cat(gt_labels, dim=0)   # [ΣGᵢ]
-            # 4) Classification loss on GT‐matched indices
-            losses['cls'] = F.cross_entropy(cls_logits, gt_labels)
-            gt_proposals = torch.cat(gt_proposals, dim=0)
-            gt_proposals_copy = gt_proposals.clone()
-            target_delta = self.box_coder.encode([gt_proposals], [gt_proposals_copy])[0]
-            # Reshape box_regs to match the expected format
-            num_objects = box_regs.shape[1] // 4
-            pred_deltas = box_regs.reshape(-1, num_objects, 4)  # [batch_size, num_objects, 4]
-            idx = torch.arange(pred_deltas.size(0), device=box_regs.device)
-            # now select pred_deltas[idx[i], gt_labels[i], :]
-            pred_deltas = pred_deltas[idx, gt_labels]  # → [batch_size, 4]
-            losses['box'] = F.smooth_l1_loss(pred_deltas, target_delta)
-
-            # 7) Attribute loss
-            gt_attributes = torch.cat(gt_attributes, dim=0)
-            emb = self.cls_embed(gt_labels)
-            feat = torch.cat([x, emb], dim=1)
-            attr_logits = self.attr_score(self.relu_attr(self.fc_attr(feat)))
-            attr_gts = gt_attributes
-            losses['attr'] = F.cross_entropy(attr_logits, attr_gts, ignore_index=-1)
+            # 6b) Faster‐RCNN classification & box‐regression on sampled ROIs
+            loss_cls, loss_box = fastrcnn_loss(
+                cls_logits, box_regs,
+                labels_list, regression_targets_list
+            )
+            losses['cls'] = loss_cls
+            losses['box'] = loss_box
+            # 7) Attribute loss on the *positive* ROIs only (labels > 0)
+            labels = torch.cat(labels_list, dim=0).to(x.device)
+            pos_inds = (labels > 0).nonzero(as_tuple=False).squeeze(1)
+            if pos_inds.numel() > 0:
+                # gather each image's attrs by its matched idxs, then flatten
+                #`matched_idxs_list` is a list per image
+                attr_targets = []
+                for tgt, midx in zip(gt_targets, matched_idxs_list):
+                    attr_targets.append(
+                        tgt['attributes'][midx.to(tgt['attributes'].device)]
+                    )
+                attr_targets = torch.cat(attr_targets, dim=0).to(x.device)
+                pos_attrs = attr_targets[pos_inds]
+                # Now run the attribute head on the *positive* subset
+                emb         = self.cls_embed(labels[pos_inds])           # [#pos, embed_dim]
+                feat_attr   = torch.cat([x[pos_inds], emb], dim=1)       # [#pos, 2048+embed_dim]
+                h           = self.relu_attr(self.fc_attr(feat_attr))   # [#pos,512]
+                attr_logits = self.attr_score(h)                         # [#pos,401]
+                losses['attr'] = F.cross_entropy(attr_logits, pos_attrs)
+            else:
+                losses['attr'] = torch.tensor(0., device=x.device)
 
             return losses
 
