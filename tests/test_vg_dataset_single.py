@@ -57,16 +57,13 @@ def visualize_image_with_boxes(dataset, idx):
         class_name = dataset._classes[class_idx]
         # Use red for background class, original color for others
         box_color = 'red' if class_idx == 0 else color
-        
-        # Create a Rectangle patch
-        rect = patches.Rectangle((x1, y1), w, h, linewidth=2, edgecolor=box_color, facecolor='none')
-        ax.add_patch(rect)
-        
+
         # Get attributes for this object
-        attr_indices = np.nonzero(attr_matrix[i])[0]
+        attr_indices = list(attr_matrix[i])
         attr_names = [dataset._attributes[idx] for idx in attr_indices if idx > 0]
         if not attr_names:
             attr_str = ''
+            continue # skip if no attributes
         else:
             attr_str = ', '.join(attr_names)
         # Add label with smart positioning
@@ -75,7 +72,9 @@ def visualize_image_with_boxes(dataset, idx):
             text_y = max(0, y1 - 10)
         else:
             text_y = min(img.size[1], y1 + h + 10)
-            
+        # Create a Rectangle patch
+        rect = patches.Rectangle((x1, y1), w, h, linewidth=2, edgecolor=box_color, facecolor='none')
+        ax.add_patch(rect)
         plt.text(x1, text_y, label, color=box_color, fontsize=8,
                 bbox=dict(facecolor='white', alpha=0.7))
     

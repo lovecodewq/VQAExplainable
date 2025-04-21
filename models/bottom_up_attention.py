@@ -76,46 +76,28 @@ class BottomUpAttention(nn.Module):
         # Backbone
         feats = self.backbone(images.tensors)
         conv4, conv5 = feats['0'], feats['1']
-        print("-Debug- conv4:", conv4.shape)
-        print("-Debug- conv5:", conv5.shape)
 
         # RPN
-        proposals, rpn_losses = self.rpn(
+        _, rpn_losses = self.rpn(
             images, {'0': conv4},
             gt_targets if self.training else None
         )
-        # Debug prints for proposals
-        for i in range(len(proposals)):
-            print("-Debug- proposals {i} shape:", proposals[i].shape)
 
         # --- PREPEND GT BOXES to each proposal list! ---
+        gt_proposals = []
+        gt_labels = []
+        gt_attributes = []
         if self.training:
-            print("-Debug- gt_targets:")
-            for target in gt_targets:
-                print("\t-Debug- target['boxes'] shape:", target['boxes'].shape)
-                print("\t-Debug- target['labels'] shape:", target['labels'].shape)
-            proposals_with_gt = []
-            for props, tgt in zip(proposals, gt_targets):
-                proposals_with_gt.append(
-                    torch.cat([tgt['boxes'], props], dim=0)
-                )
-            proposals = proposals_with_gt
-
-        # Debug prints for proposals after GT
-        for proposal in proposals:
-            print("-Debug- proposals after injecting gt boxes:", proposal.shape)
-
+            for tgt in gt_targets:
+                gt_proposals.append(tgt['boxes'])
+                gt_labels.append(tgt['labels'])
+                gt_attributes.append(tgt['attributes'])
         # RoIAlign + pool → [sum(N_i),2048]
-        roi_feats = self.roi_pool({'1': conv5}, proposals, images.image_sizes)
-        print("-Debug- roi_feats shape:", roi_feats.shape)
+        roi_feats = self.roi_pool({'1': conv5}, gt_proposals, images.image_sizes)
         x = self.global_pool(roi_feats).flatten(1)
-        print("-Debug- x shape:", x.shape)
-
         # Heads
         cls_logits = self.cls_score(x)          # [sum(N_i), num_obj]
-        print("-Debug- cls_logits shape:", cls_logits.shape)
         box_regs   = self.bbox_pred(x)          # [sum(N_i), num_obj*4]
-        print("-Debug- box_regs shape:", box_regs.shape)
         if self.training:
             # 1) RPN losses
             losses = {
@@ -123,65 +105,31 @@ class BottomUpAttention(nn.Module):
                 'rpn_box': rpn_losses['loss_rpn_box_reg']
             }
 
-            # 2) Compute flatten‐offsets for each image
-            lengths = [p.shape[0] for p in proposals]
-            offsets = [0] + torch.cumsum(
-                torch.tensor(lengths[:-1], device=x.device), dim=0
-            ).tolist()
-
-            # 3) Gather all GT labels & proposal‐indices
-            pos_idxs = []
-            cls_lbls = []
-            for i, tgt in enumerate(gt_targets):
-                G = tgt['labels'].size(0)
-                start = offsets[i]
-                idxs = torch.arange(start, start + G, device=x.device)
-                pos_idxs.append(idxs)
-                cls_lbls.append(tgt['labels'])
-
-            pos_idxs = torch.cat(pos_idxs, dim=0)   # [ΣGᵢ]
-            cls_lbls = torch.cat(cls_lbls, dim=0)   # [ΣGᵢ]
-
+            gt_labels = torch.cat(gt_labels, dim=0)   # [ΣGᵢ]
             # 4) Classification loss on GT‐matched indices
-            cls_pos = cls_logits[pos_idxs]          # [ΣGᵢ, num_obj]
-            losses['cls'] = F.cross_entropy(cls_pos, cls_lbls)
+            losses['cls'] = F.cross_entropy(cls_logits, gt_labels)
+            gt_proposals = torch.cat(gt_proposals, dim=0)
+            gt_proposals_copy = gt_proposals.clone()
+            target_delta = self.box_coder.encode([gt_proposals], [gt_proposals_copy])[0]
+            # Reshape box_regs to match the expected format
+            num_objects = box_regs.shape[1] // 4
+            pred_deltas = box_regs.reshape(-1, num_objects, 4)  # [batch_size, num_objects, 4]
+            idx = torch.arange(pred_deltas.size(0), device=box_regs.device)
+            # now select pred_deltas[idx[i], gt_labels[i], :]
+            pred_deltas = pred_deltas[idx, gt_labels]  # → [batch_size, 4]
+            losses['box'] = F.smooth_l1_loss(pred_deltas, target_delta)
 
-            # 5) Box regression targets via BoxCoder
-            #    prepare lists of length B
-            ref_boxes     = [t['boxes']               for t in gt_targets]
-            matched_props = [proposals[i][:len(t['boxes'])] 
-                             for i, t in enumerate(gt_targets)]
-            # returns Tensor [ΣGᵢ, 4]
-            deltas = self.box_coder.encode(ref_boxes, matched_props)
-
-            # 6) Gather predicted deltas for the GT classes
-            C = cls_logits.size(1)
-            box_pred = box_regs[pos_idxs]            # [ΣGᵢ, C*4]
-            box_pred = box_pred.view(-1, C, 4)      # [ΣGᵢ, C, 4]
-            box_pred = box_pred[
-                torch.arange(cls_lbls.size(0), device=x.device), 
-                cls_lbls
-            ]                                       # [ΣGᵢ, 4]
-            losses['box'] = F.smooth_l1_loss(box_pred, deltas)
-
-            # 7) Attribute loss (optional)
-            if 'attributes' in gt_targets[0]:
-                attr_logits, attr_gts = [], []
-                for i, tgt in enumerate(gt_targets):
-                    G = tgt['attributes'].size(0)
-                    start = offsets[i]
-                    idxs  = torch.arange(start, start + G, device=x.device)
-                    emb   = self.cls_embed(tgt['labels'])
-                    feat  = torch.cat([x[idxs], emb], dim=1)
-                    attr_logits.append(self.attr_score(self.relu_attr(self.fc_attr(feat))))
-                    attr_gts.append(tgt['attributes'])
-                attr_logits = torch.cat(attr_logits, dim=0)
-                attr_gts     = torch.cat(attr_gts,     dim=0)
-                losses['attr'] = F.cross_entropy(attr_logits, attr_gts, ignore_index=-1)
+            # 7) Attribute loss
+            gt_attributes = torch.cat(gt_attributes, dim=0)
+            emb = self.cls_embed(gt_labels)
+            feat = torch.cat([x, emb], dim=1)
+            attr_logits = self.attr_score(self.relu_attr(self.fc_attr(feat)))
+            attr_gts = gt_attributes
+            losses['attr'] = F.cross_entropy(attr_logits, attr_gts, ignore_index=-1)
 
             return losses
 
-        # Inference (unchanged) …
+        # Inference
         probs = F.softmax(cls_logits, dim=1)[:,1:]
         max_s, _ = probs.max(dim=1)
         keep = max_s > self.score_thresh

@@ -90,7 +90,7 @@ def main():
     indices = list(range(len(dataset.image_index)))
     
     # Create a collate function specific to this dataset using our picklable class
-    collator = VGCollator(dataset)
+    collator = VGCollator(dataset, device=device)
     
     # Adjust num_workers based on device
     if device == 'mps':

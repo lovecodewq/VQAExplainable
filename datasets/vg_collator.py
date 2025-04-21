@@ -1,4 +1,3 @@
-
 import logging
 import cv2
 from fast_rcnn.config import cfg  # Import Fast R-CNN config
@@ -9,13 +8,13 @@ import torch
 
 # Create a picklable collate function class
 class VGCollator:
-    def __init__(self, dataset):
+    def __init__(self, dataset, device='cpu'):
         self.dataset = dataset
+        self.device = device
         
     def __call__(self, batch):
         """
         Convert VG format to the format required by BottomUpAttention
-        batch is a list of roidb indices
         """
         logger = logging.getLogger(__name__)
         logger.debug(f"Collate_fn processing batch of size: {len(batch)}")
@@ -34,13 +33,13 @@ class VGCollator:
             if im is None:
                 raise ValueError(f"Failed to load image: {img_path}")
             
-            # Store original size
-            orig_h, orig_w = im.shape[:2]
-            image_sizes.append((orig_h, orig_w))
-            
             # Prepare image using original Faster R-CNN preprocessing
             target_size = cfg.TRAIN.SCALES[0]
             im, im_scale = prep_im_for_blob(im, cfg.PIXEL_MEANS, target_size, cfg.TRAIN.MAX_SIZE)
+            # Record resized size (the actual tensor we'll feed RPN)
+            new_h, new_w = im.shape[:2]
+            image_sizes.append((new_h, new_w))
+
             processed_ims.append(im)
             im_scales.append(im_scale)
             
@@ -76,22 +75,22 @@ class VGCollator:
         
         # Convert image list to network input blob
         blob = im_list_to_blob(processed_ims)
-        imgs_tensor = torch.from_numpy(blob)
+        imgs_tensor = torch.from_numpy(blob).to(self.device)
         
         # Create ImageList for RPN and ROI pooling
-        # Note: image_sizes should be the original sizes before any scaling
         imgs = ImageList(imgs_tensor, image_sizes)
         
         # Create list of ground truth targets in format expected by RPN
         gt_targets = []
         for gt in gt_boxes_list:
             gt_targets.append({
-                'boxes': gt[:, :4],  # (x1, y1, x2, y2)
-                'labels': gt[:, 4].long()  # object class ids
+                'boxes': gt[:, :4].to(self.device),  # (x1, y1, x2, y2)
+                'labels': gt[:, 4].long().to(self.device),  # object class ids
+                'attributes': gt[:, 5].long().to(self.device)  # attribute ids
             })
         
         # Create image info [height, width, scale]
         _, _, H, W = imgs_tensor.shape
-        im_info = torch.tensor([[H, W, s] for s in im_scales])
+        im_info = torch.tensor([[H, W, s] for s in im_scales], device=self.device)
         
         return imgs, im_info, gt_targets
