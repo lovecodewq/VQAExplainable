@@ -53,3 +53,12 @@ Our goal is not only to maximize answer accuracy but also to expose the model’
 3. **Download and preprocess dataset of visual genome**
     ```bash
     bash scripts/setup_vg_data.sh
+    ```
+
+## Testing
+
+1. **Test vg dataset by visualization**
+    ```python
+    python tests/test_vg_dataset_single.py
+    ```
+

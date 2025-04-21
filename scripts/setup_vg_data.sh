@@ -7,6 +7,7 @@ VG_ROOT="${VG_ROOT:-$PWD/data/visual_genome}"
 IMG_DIR="$VG_ROOT/images"
 META_DIR="$VG_ROOT/annotations"
 PREPROCESS_SCRIPT="${PREPROCESS_SCRIPT:-scripts/setup_vg.py}"
+SETUP_SCRIPT="${SETUP_SCRIPT:-setup.py}"
 OUT_JSON="$VG_ROOT/vg_annotations.json"
 
 # -- MAKE DIRS
@@ -68,6 +69,11 @@ if [ ! -f "$PREPROCESS_SCRIPT" ]; then
 fi
 
 cmd="python3 $PREPROCESS_SCRIPT"
+echo $cmd
+$cmd
+
+echo "Building vg dataset extension..."
+cmd="python $SETUP_SCRIPT build_ext --inplace"
 echo $cmd
 $cmd
 
