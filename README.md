@@ -62,3 +62,8 @@ Our goal is not only to maximize answer accuracy but also to expose the model’
     python tests/test_vg_dataset_single.py
     ```
 
+## Train Bottom Up Attention
+```bash
+bash train_bottom_up.sh
+```
+**Note**: add -d to specify device, default device is cpu

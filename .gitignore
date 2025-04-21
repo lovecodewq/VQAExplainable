@@ -129,7 +129,10 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
-data/
+data/cache/
+data/visual_genome/images/
+data/visual_genome/annotations/
+data/visual_genome/xml
 .cursorignore
 
 .DS_Store
