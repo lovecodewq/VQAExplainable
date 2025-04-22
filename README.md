@@ -64,6 +64,11 @@ Our goal is not only to maximize answer accuracy but also to expose the model’
 
 ## Train Bottom Up Attention
 ```bash
-bash train_bottom_up.sh
+bash run_train_bottom_up.sh
 ```
 **Note**: add -d to specify device, default device is cpu
+
+## Generate bottom up features
+```bash
+bash run_generate_bottom_up_features.sh
+```
