@@ -258,14 +258,15 @@ class vg(imdb):
 
     def evaluate_detections(self, all_boxes, output_dir):
         self._write_voc_results_file(self.classes, all_boxes, output_dir)
-        self._do_python_eval(output_dir)
+        mean_ap = self._do_python_eval(output_dir)
         if self.config['cleanup']:
             for cls in self._classes:
                 if cls == '__background__':
                     continue
                 filename = self._get_vg_results_file_template(output_dir).format(cls)
-                os.remove(filename)      
-                
+                os.remove(filename)
+        return mean_ap
+
     def evaluate_attributes(self, all_boxes, output_dir):
         self._write_voc_results_file(self.attributes, all_boxes, output_dir)
         self._do_python_eval(output_dir, eval_attributes = True)
@@ -290,7 +291,7 @@ class vg(imdb):
             with open(filename, 'wt', encoding='utf-8') as f:
                 for im_ind, index in enumerate(self.image_index):
                     dets = all_boxes[cls_ind][im_ind]
-                    if dets == []:
+                    if dets is None or dets.size == 0:
                         continue
                     # the VOCdevkit expects 1-based indices
                     for k in range(dets.shape[0]):
@@ -330,11 +331,13 @@ class vg(imdb):
                 thresh += [scores[np.argmax(f)]]
             else: 
                 thresh += [0]
+            # Handle None AP values (no detections or no ground truth)
+            ap = 0.0 if ap is None else ap
             aps += [ap]
             nposs += [float(npos)]
             print('AP for {} = {:.4f} (npos={:,})'.format(cls, ap, npos))
             if pickle:
-                with open(os.path.join(output_dir, cls + '_pr.pkl'), 'w') as f:
+                with open(os.path.join(output_dir, cls + '_pr.pkl'), 'wb') as f:
                     cPickle.dump({'rec': rec, 'prec': prec, 'ap': ap, 
                         'scores': scores, 'npos':npos}, f)
          
@@ -351,10 +354,14 @@ class vg(imdb):
             for i, cls in enumerate(classes[1:]):
                 f.write('{:s} {:.3f}\n'.format(cls, thresh[i]))           
                 
-        weights = np.array(nposs)
-        weights /= weights.sum()
-        print('Mean AP = {:.4f}'.format(np.mean(aps)))
-        print('Weighted Mean AP = {:.4f}'.format(np.average(aps, weights=weights)))
+        # Calculate mean AP
+        aps = np.array(aps)
+        nposs = np.array(nposs)
+        weights = nposs / nposs.sum()
+        mean_ap = np.mean(aps)
+        weighted_mean_ap = np.average(aps, weights=weights)
+        print('Mean AP = {:.4f}'.format(mean_ap))
+        print('Weighted Mean AP = {:.4f}'.format(weighted_mean_ap))
         print('Mean Detection Threshold = {:.3f}'.format(avg_thresh))
         print('~~~~~~~~')
         print('Results:')
@@ -366,8 +373,10 @@ class vg(imdb):
         print('--------------------------------------------------------------')
         print('Results computed with the **unofficial** PASCAL VOC Python eval code.')
         print('--------------------------------------------------------------')           
-
         
+        return mean_ap  # Return the mean AP value
+
+
 if __name__ == '__main__':
     d = datasets.vg('val')
     res = d.roidb

@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader
 import numpy as np
 import time
 from datetime import datetime, timedelta
+import torch.nn.functional as F
 
 from models.bottom_up_attention import BottomUpAttention
 from datasets.vg import vg  # Import the Visual Genome dataset class
@@ -49,7 +50,7 @@ def load_checkpoint(model, optimizer, checkpoint_path, device):
         logger.error(f"Checkpoint not found at {checkpoint_path}")
         return None, 0, float('inf')
     
-    logger.info(f"Loading checkpoint from {checkpoint_path}")
+    print(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
     model.load_state_dict(checkpoint['model_state_dict'])
@@ -64,8 +65,8 @@ def load_checkpoint(model, optimizer, checkpoint_path, device):
     start_epoch = checkpoint['epoch'] + 1
     best_performance = checkpoint.get('performance', float('inf'))
     
-    logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
-    logger.info(f"Best performance so far: {best_performance:.4f}")
+    print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+    print(f"Best performance so far: {best_performance:.4f}")
     
     return start_epoch, best_performance
 
@@ -108,57 +109,110 @@ def format_time(seconds):
     """Convert seconds to human readable string"""
     return str(timedelta(seconds=int(seconds)))
 
-def evaluate(model, val_loader, device, eval_dir):
-    """Evaluate the model on validation set"""
-    logger = logging.getLogger(__name__)
-    logger.info("Starting evaluation")
-    
-    eval_start_time = time.time()
+def evaluate(epoch, model, val_loader, device, eval_dir):
+    print("Starting evaluation")
+    t0 = time.time()
     model.eval()
-    all_boxes = [[[] for _ in range(len(val_loader.dataset))]
-                 for _ in range(len(val_loader.dataset._classes))]
-    
-    inference_time = 0
-    with torch.no_grad():
-        for i, (imgs, _, _) in enumerate(val_loader):
-            batch_start = time.time()
-            if i % 10 == 0:
-                logger.info(f'Processing batch {i}/{len(val_loader)}')
-            
-            imgs = imgs.to(device)
-            
-            # Forward pass without ground truth (inference mode)
-            outputs = model(imgs)
-            inference_time += time.time() - batch_start
-            
-            # Process detection outputs
-            cls_scores = outputs['cls_score'].cpu().numpy()
-            bbox_preds = outputs['bbox_pred'].cpu().numpy()
-            
-            # Store detections
-            for j in range(len(imgs)):
-                for c in range(1, len(val_loader.dataset._classes)):  # Skip background
-                    inds = np.where(cls_scores[j, :] > 0.0)[0]
-                    if len(inds) > 0:
-                        cls_scores_c = cls_scores[j, inds, c]
-                        bbox_preds_c = bbox_preds[j, inds, c*4:(c+1)*4]
-                        dets = np.hstack((bbox_preds_c, cls_scores_c[:, np.newaxis]))
-                        all_boxes[c][i*cfg.TRAIN.BATCH_SIZE + j] = dets
-    
-    # Evaluate detections
-    os.makedirs(eval_dir, exist_ok=True)
-    eval_start = time.time()
-    val_loader.dataset.evaluate_detections(all_boxes, eval_dir)
-    eval_time = time.time() - eval_start
-    
-    total_eval_time = time.time() - eval_start_time
-    logger.info(f"Evaluation completed in {format_time(total_eval_time)}")
-    logger.info(f"  - Inference time: {format_time(inference_time)}")
-    logger.info(f"  - Metric computation time: {format_time(eval_time)}")
-    
-    model.train()
-    return all_boxes, total_eval_time
 
+    # get the real dataset & num_images
+    vg_dataset = val_loader.collate_fn.dataset
+    num_images = len(vg_dataset.image_index)
+    num_classes= len(vg_dataset._classes)
+
+    # empty detections: [class][image]→array of Nx5
+    all_boxes = [[ np.zeros((0,5),dtype=np.float32)
+                   for _ in range(num_images) ]
+                 for _ in range(num_classes)]
+
+    inference_time = 0.0
+
+    with torch.no_grad():
+        for img_idx in range(num_images):
+            print(f"Processing image {img_idx} of {num_images}")
+            if img_idx > 10:
+                break
+            # build a batch of size 1
+            imgs, im_info, _ = val_loader.collate_fn([img_idx])
+            imgs = imgs.to(device)
+
+            t1 = time.time()
+            out = model(imgs)   # returns top-K for this one image
+            inference_time += time.time() - t1
+
+            # out['cls_score'] is [K, C] (including bg at 0)
+            scores = F.softmax(out['cls_score'], dim=1)     # [K, C]
+            scores = scores[:,1:].cpu().numpy()          # drop bg → [K,C-1]
+            boxes  = out['boxes'].cpu().numpy()                           # [K, 4]
+            K = scores.shape[0]
+            for c in range(1, num_classes):
+                sc = scores[:, c-1]            # [K]
+                inds = np.where(sc>0.0)[0]   # already thresholded by model
+                if inds.size:
+                    dets = np.hstack([
+                        boxes[inds], sc[inds, None]
+                    ]).astype(np.float32)      # [N,5]
+                else:
+                    dets = np.zeros((0,5), dtype=np.float32)
+                all_boxes[c][img_idx] = dets
+            
+
+    # save & evaluate
+    os.makedirs(eval_dir, exist_ok=True)
+    metrics = vg_dataset.evaluate_detections(all_boxes, eval_dir)
+    t_eval = time.time() - t0
+
+    print(f"Eval done in {t_eval:.1f}s (inference {inference_time:.1f}s)")
+    print("mAP:", metrics)
+
+    model.train()
+    return -metrics if isinstance(metrics, float) else -np.mean(metrics)
+
+
+def epoch_training(epoch, epochs, batch_size, num_instances, train_loader, model, device, opt):
+    print(f"\nStarting epoch {epoch}/{epochs}")
+    running = {}
+    
+    # Training phase
+    train_start_time = time.time()
+    model.train()
+    for i, (imgs, _, gt_targets) in enumerate(train_loader, 1):
+        batch_start_time = time.time()
+        
+        if i == 1:  # Print only for first batch of each epoch
+            print(f"Epoch {epoch}: Processing batch {i}/{num_instances // batch_size}")
+        
+        imgs = imgs.to(device)
+
+        # Forward pass + losses
+        losses = model(imgs, gt_targets)
+        total = sum(losses.values())
+
+        opt.zero_grad()
+        total.backward()
+        opt.step()
+
+        # Accumulate stats
+        for k, v in losses.items():
+            running[k] = running.get(k, 0.) + v.item()
+        
+        batch_time = time.time() - batch_start_time
+        if i % 5 == 0:
+            avg = {k: running[k]/5 for k in running}
+            print(f"Epoch {epoch} | iter {i}/{num_instances // batch_size} | " +
+                    " | ".join([f"{k}:{avg[k]:.4f}" for k in avg]) +
+                    f" | batch_time: {batch_time:.2f}s")
+            running.clear()
+    
+    train_time = time.time() - train_start_time
+    print(f"Training epoch {epoch} completed in {format_time(train_time)}")
+
+def save_checkpoint(model, optimizer, epoch, checkpoint_path):
+    torch.save({
+        'epoch': epoch,
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, checkpoint_path)
+        
 def main():
     args = parse_args()
     
@@ -177,8 +231,7 @@ def main():
     if device not in available_devices:
         logger.warning(f"Selected device '{device}' is not available. Using {default_device} instead.")
         device = default_device
-    
-    logger.info(f"Using device: {device}")
+    print(f"Using device: {device}")
     
     # Initialize datasets
     train_dataset = vg(args.vg_version, args.split)
@@ -192,9 +245,8 @@ def main():
     val_collator = VGCollator(val_dataset, device=device)
     
     
-    batch_size = 12
+    batch_size = 10
     epochs = 5
-    # batch_size = cfg.TRAIN.BATCH_SIZE
     # Print dataset and iteration info
     print(f"Validation dataset size: {len(val_indices)}")
     print(f"Train dataset size: {len(train_indices)}")
@@ -203,7 +255,7 @@ def main():
     print(f"Number of workers: {args.num_workers}")
     print(f"Iterations per epoch: {len(train_indices) // batch_size}")
     
-    logger.info("Initializing dataloaders")
+    print("Initializing dataloaders")
     train_loader = DataLoader(
         train_indices,
         batch_size=batch_size,
@@ -221,9 +273,9 @@ def main():
         num_workers=args.num_workers,
         pin_memory=(device != 'cuda')
     )
-    logger.info("Dataloaders initialized")
+    print("Dataloaders initialized")
 
-    logger.info("Initializing model")
+    print("Initializing model")
     # Model & optimizer
     model = BottomUpAttention(
         num_objects=len(train_dataset._classes),
@@ -248,99 +300,46 @@ def main():
         start_epoch, best_performance = load_checkpoint(model, opt, args.resume, device)
         if start_epoch is None:  # Loading failed
             return
-        logger.info(f"Resuming training from epoch {start_epoch}")
+        print(f"Resuming training from epoch {start_epoch}")
 
     # model = torch.compile(model, backend="inductor") # no gain for cpu
-    logger.info("Model initialized")
+    print("Model initialized")
     
     epoch_times = []  # Track time per epoch
-    
+    epoch_start_time = time.time()
     for epoch in range(start_epoch, epochs + 1):
-        epoch_start_time = time.time()
-        print(f"\nStarting epoch {epoch}/{epochs}")
-        running = {}
-        
-        # Training phase
-        train_start_time = time.time()
-        model.train()
-        for i, (imgs, _, gt_targets) in enumerate(train_loader, 1):
-            batch_start_time = time.time()
-            
-            if i == 1:  # Print only for first batch of each epoch
-                print(f"Epoch {epoch}: Processing batch {i}/{len(train_indices) // batch_size}")
-            
-            imgs = imgs.to(device)
+        epoch_training(epoch, epochs, batch_size, len(train_indices), train_loader, model, device, opt)
 
-            # Forward pass + losses
-            losses = model(imgs, gt_targets)
-            total = sum(losses.values())
-
-            opt.zero_grad()
-            total.backward()
-            opt.step()
-
-            # Accumulate stats
-            for k, v in losses.items():
-                running[k] = running.get(k, 0.) + v.item()
-            
-            batch_time = time.time() - batch_start_time
-            if i % 5 == 0:
-                avg = {k: running[k]/5 for k in running}
-                print(f"Epoch {epoch} | iter {i}/{len(train_indices) // batch_size} | " +
-                      " | ".join([f"{k}:{avg[k]:.4f}" for k in avg]) +
-                      f" | batch_time: {batch_time:.2f}s")
-                running.clear()
-        
-        train_time = time.time() - train_start_time
-        logger.info(f"Training epoch {epoch} completed in {format_time(train_time)}")
-        
         # Evaluation phase
-        logger.info(f"Evaluating epoch {epoch}")
-        eval_dir = os.path.join(args.eval_dir, f'epoch_{epoch}')
-        all_boxes, eval_time = evaluate(model, val_loader, device, eval_dir)
-        
-        # Calculate total loss from evaluation (you might want to use a different metric)
-        current_performance = sum(running.values()) if running else float('inf')
+        # current_performance = evaluate(epoch, model, val_loader, device, args.eval_dir)
         
         # Save checkpoint
         checkpoint_path = args.out_checkpoint.replace('.pth', f"_ep{epoch}.pth")
-        torch.save({
-            'epoch': epoch,
-            'model_state_dict': model.state_dict(),
-            'optimizer_state_dict': opt.state_dict(),
-            'performance': current_performance,
-        }, checkpoint_path)
+        save_checkpoint(model, opt, epoch, checkpoint_path)
         
-        # Save best model
-        if current_performance < best_performance:
-            best_performance = current_performance
-            best_checkpoint_path = args.out_checkpoint.replace('.pth', '_best.pth')
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': opt.state_dict(),
-                'performance': best_performance,
-            }, best_checkpoint_path)
-            logger.info(f"New best model saved with performance: {best_performance:.4f}")
-        
+        # Save best model (note: we use negative mAP so lower is better)
+        # if current_performance < best_performance:
+        #     best_performance = current_performance
+        #     best_checkpoint_path = args.out_checkpoint.replace('.pth', '_best.pth')
+        #     save_checkpoint(model, opt, epoch, best_performance, best_checkpoint_path)
+        #     print(f"New best model saved with mAP: {-best_performance:.4f}")
+
         # Log timing for this epoch
         epoch_time = time.time() - epoch_start_time
         epoch_times.append(epoch_time)
         avg_epoch_time = sum(epoch_times) / len(epoch_times)
         
-        logger.info(f"Epoch {epoch} completed in {format_time(epoch_time)}")
-        logger.info(f"  - Training time: {format_time(train_time)}")
-        logger.info(f"  - Evaluation time: {format_time(eval_time)}")
-        logger.info(f"Average epoch time: {format_time(avg_epoch_time)}")
+        print(f"Epoch {epoch} completed in {format_time(epoch_time)}")
+        print(f"Average epoch time: {format_time(avg_epoch_time)}")
         
         # Estimate remaining time
         remaining_epochs = epochs - epoch
         estimated_remaining_time = avg_epoch_time * remaining_epochs
-        logger.info(f"Estimated remaining time: {format_time(estimated_remaining_time)}")
+        print(f"Estimated remaining time: {format_time(estimated_remaining_time)}")
     
     total_training_time = time.time() - training_start_time
-    logger.info(f"\nTotal training completed in {format_time(total_training_time)}")
-    logger.info(f"Average epoch time: {format_time(sum(epoch_times) / len(epoch_times))}")
+    print(f"\nTotal training completed in {format_time(total_training_time)}")
+    print(f"Average epoch time: {format_time(sum(epoch_times) / len(epoch_times))}")
     print("=== Done training bottom-up attention ===")
 
 if __name__=="__main__":
