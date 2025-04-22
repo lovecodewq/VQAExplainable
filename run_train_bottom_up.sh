@@ -6,7 +6,7 @@ VG_VERSION="1600-400-20"
 SPLIT="minitrain"
 OUTPUT_DIR="checkpoints"
 GPU_IDS="0"
-LOG_LEVEL="ERROR"  # Default log level
+LOG_LEVEL="INFO"  # Default log level
 DEVICE="cpu"
 
 # Help message

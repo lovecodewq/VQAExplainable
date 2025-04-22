@@ -134,5 +134,5 @@ data/visual_genome/images/
 data/visual_genome/annotations/
 data/visual_genome/xml
 .cursorignore
-
+bottom_up_features/
 .DS_Store

@@ -23,13 +23,13 @@ class VGCollator:
         im_scales = []
         gt_boxes_list = []
         image_sizes = []
-        
+        image_file_names = []
         # Process each image in the batch
         for roidb_idx in batch:
             # Get image
             img_path = self.dataset.image_path_at(roidb_idx)
             im = cv2.imread(img_path)
-            
+            image_file_names.append(img_path.split('/')[-2:])
             if im is None:
                 raise ValueError(f"Failed to load image: {img_path}")
             
@@ -91,6 +91,6 @@ class VGCollator:
         
         # Create image info [height, width, scale]
         _, _, H, W = imgs_tensor.shape
-        im_info = torch.tensor([[H, W, s] for s in im_scales], device=self.device)
+        im_info = image_file_names
         
         return imgs, im_info, gt_targets

@@ -88,7 +88,7 @@ class BottomUpAttention(nn.Module):
             detections_per_img = self.max_regions
         )
 
-    def forward(self, images, im_info, gt_targets=None):
+    def forward(self, images, gt_targets=None):
         # 1) Backbone
         feats = self.backbone(images.tensors)
         conv4, conv5 = feats['0'], feats['1']
