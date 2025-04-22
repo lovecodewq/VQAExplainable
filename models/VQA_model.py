@@ -85,7 +85,7 @@ class VQAModel(nn.Module):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    default_config_file = os.path.join(os.path.abspath(os.getcwd()), "./top_down_attention/VQA_model_config.yaml")
+    default_config_file = os.path.join(os.path.abspath(os.getcwd()), "./config/VQA_training_config.yaml")
     parser.add_argument("--config", type=str, default=default_config_file, help="Path to config file")
 
     args = parser.parse_args()
