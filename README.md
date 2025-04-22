@@ -72,3 +72,6 @@ bash run_train_bottom_up.sh
 ```bash
 bash run_generate_bottom_up_features.sh
 ```
+
+## Set up pretrained bottom up model
+see [pretrained model](thirdparty/Faster-R-CNN-with-model-pretrained-on-Visual-Genome/README.md)

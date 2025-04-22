@@ -1,0 +1,5 @@
+Metadata-Version: 2.2
+Name: faster_rcnn
+Version: 0.1
+Summary: object detection in pytorch
+Dynamic: summary

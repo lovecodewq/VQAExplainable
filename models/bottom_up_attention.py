@@ -101,6 +101,7 @@ class BottomUpAttention(nn.Module):
 
         # 3) Sample and label our proposals exactly like the original Faster RCNN:
         #    - append GTs, match IoU, subsample 25% pos / 75% neg
+        # this will sample batch_size_per_image = 128 proposals
         if self.training:
             proposals, matched_idxs_list, labels_list, regression_targets_list = \
                 self.roi_heads.select_training_samples(proposals, gt_targets)
@@ -110,7 +111,6 @@ class BottomUpAttention(nn.Module):
         # 4) RoIAlign + global pool
         roi_feats = self.roi_pool({'1': conv5}, proposals, images.image_sizes)
         x = self.global_pool(roi_feats).flatten(1) # [M, 2048]
-
         # 5) Detection head predictions
         cls_logits = self.cls_score(x)      # [M, 1601]
         box_regs   = self.bbox_pred(x)      # [M, 1601*4]
@@ -154,14 +154,32 @@ class BottomUpAttention(nn.Module):
 
         # Inference
         probs = F.softmax(cls_logits, dim=1)[:,1:]
-        max_s, _ = probs.max(dim=1)
+        max_s, lbls = probs.max(dim=1)
         keep = max_s > self.score_thresh
         keep_idxs = torch.nonzero(keep).squeeze(1)
         topk = keep_idxs[torch.argsort(max_s[keep], descending=True)][:self.max_regions]
 
+        # 1) shape everything back into [N, C, 4]
+        C      = cls_logits.size(1)
+        deltas = box_regs.view(-1, C, 4)                   # [N, C, 4]
+
+        # 2) pick the delta for the single most‐likely class for each kept ROI
+        picked_labels = lbls[topk]                         # [K]
+        picked_deltas = deltas[topk, picked_labels]        # [K,4]
+
+        # 3) the “reference” RPN boxes for *this* image are proposals[0]
+        ref_boxes = proposals[0][topk]                     # [K,4]
+
+        # 4) decode: BoxCoder wants rel_codes:T[K,4], boxes:List[Tensor[K,4]]
+        decoded = self.box_coder.decode(
+            picked_deltas,    # Tensor[K,4]
+            [ref_boxes]       # note the list!
+        )                                                 # returns Tensor[K,1,4]
+        decoded = decoded.squeeze(1)                     # → [K,4]
+
         out = {
-            'cls_score': cls_logits[topk],
-            'bbox_pred': box_regs[topk]
+            'cls_score': cls_logits[topk],  # [K, C]
+            'boxes':     decoded            # [K, 4]
         }
         pred_cls = out['cls_score'].argmax(dim=1)
         emb_inf  = self.cls_embed(pred_cls)
