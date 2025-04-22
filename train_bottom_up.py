@@ -17,10 +17,6 @@ from models.bottom_up_attention import BottomUpAttention
 from datasets.vg import vg  # Import the Visual Genome dataset class
 from fast_rcnn.config import cfg  # Import Fast R-CNN config
 
-os.environ["OMP_NUM_THREADS"] = "8"
-os.environ["MKL_NUM_THREADS"] = "8"
-torch.set_num_threads(8)
-torch.set_num_interop_threads(8)
 
 def get_available_device():
     """Check and print all available devices for training"""
@@ -45,6 +41,34 @@ def get_available_device():
     
     return device_name, available_devices
 
+def load_checkpoint(model, optimizer, checkpoint_path, device):
+    """Load model and optimizer state from checkpoint"""
+    logger = logging.getLogger(__name__)
+    
+    if not os.path.exists(checkpoint_path):
+        logger.error(f"Checkpoint not found at {checkpoint_path}")
+        return None, 0, float('inf')
+    
+    logger.info(f"Loading checkpoint from {checkpoint_path}")
+    checkpoint = torch.load(checkpoint_path, map_location=device)
+    
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    
+    # Move optimizer states to correct device
+    for state in optimizer.state.values():
+        for k, v in state.items():
+            if isinstance(v, torch.Tensor):
+                state[k] = v.to(device)
+    
+    start_epoch = checkpoint['epoch'] + 1
+    best_performance = checkpoint.get('performance', float('inf'))
+    
+    logger.info(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+    logger.info(f"Best performance so far: {best_performance:.4f}")
+    
+    return start_epoch, best_performance
+
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--vg-version',    default='1600-400-20',
@@ -57,13 +81,15 @@ def parse_args():
                    help='Where to save the trained model weights')
     p.add_argument('--device',        type=str,   default=None,
                    help='Device to use for training: cpu, cuda, mps (default: auto-detect)')
-    p.add_argument('--log-level',     type=str,   default='ERROR',
+    p.add_argument('--log-level',     type=str,   default='INFO',
                    choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                    help='Logging level')
     p.add_argument('--num-workers',   type=int,   default=8,
                    help='Number of workers for data loading')
     p.add_argument('--eval-dir',      default='eval_output',
                    help='Directory to save evaluation results')
+    p.add_argument('--resume',        type=str,   default=None,
+                   help='Path to checkpoint to resume training from')
     return p.parse_args()
 
 def setup_logging(log_level):
@@ -94,16 +120,15 @@ def evaluate(model, val_loader, device, eval_dir):
     
     inference_time = 0
     with torch.no_grad():
-        for i, (imgs, im_info, _) in enumerate(val_loader):
+        for i, (imgs, _, _) in enumerate(val_loader):
             batch_start = time.time()
             if i % 10 == 0:
                 logger.info(f'Processing batch {i}/{len(val_loader)}')
             
             imgs = imgs.to(device)
-            im_info = im_info.to(device)
             
             # Forward pass without ground truth (inference mode)
-            outputs = model(imgs, im_info)
+            outputs = model(imgs)
             inference_time += time.time() - batch_start
             
             # Process detection outputs
@@ -167,12 +192,15 @@ def main():
     val_collator = VGCollator(val_dataset, device=device)
     
     
-    batch_size = 8 
-    epochs = 10
+    batch_size = 12
+    epochs = 5
     # batch_size = cfg.TRAIN.BATCH_SIZE
     # Print dataset and iteration info
-    print(f"\nDataset size: {len(train_indices)}")
+    print(f"Validation dataset size: {len(val_indices)}")
+    print(f"Train dataset size: {len(train_indices)}")
     print(f"Batch size: {batch_size}")
+    print(f"Epochs: {epochs}")
+    print(f"Number of workers: {args.num_workers}")
     print(f"Iterations per epoch: {len(train_indices) // batch_size}")
     
     logger.info("Initializing dataloaders")
@@ -201,9 +229,8 @@ def main():
         num_objects=len(train_dataset._classes),
         num_attributes=len(train_dataset._attributes)
     )
-    model.train().to(device)
-    logger.info("Model initialized")
-
+    model.to(device)
+    
     # Use Fast R-CNN learning rate settings
     opt = optim.SGD(
         model.parameters(), 
@@ -211,11 +238,24 @@ def main():
         momentum=0.9,
         weight_decay=0.0005
     )
+    
+    # Initialize tracking variables
+    start_epoch = 1
+    best_performance = float('inf')
+    
+    # Load checkpoint if specified
+    if args.resume:
+        start_epoch, best_performance = load_checkpoint(model, opt, args.resume, device)
+        if start_epoch is None:  # Loading failed
+            return
+        logger.info(f"Resuming training from epoch {start_epoch}")
 
-    best_performance = float('inf')  # Track best model performance
+    # model = torch.compile(model, backend="inductor") # no gain for cpu
+    logger.info("Model initialized")
+    
     epoch_times = []  # Track time per epoch
     
-    for epoch in range(1, epochs + 1):
+    for epoch in range(start_epoch, epochs + 1):
         epoch_start_time = time.time()
         print(f"\nStarting epoch {epoch}/{epochs}")
         running = {}
@@ -223,17 +263,16 @@ def main():
         # Training phase
         train_start_time = time.time()
         model.train()
-        for i, (imgs, im_info, gt_targets) in enumerate(train_loader, 1):
+        for i, (imgs, _, gt_targets) in enumerate(train_loader, 1):
             batch_start_time = time.time()
             
             if i == 1:  # Print only for first batch of each epoch
                 print(f"Epoch {epoch}: Processing batch {i}/{len(train_indices) // batch_size}")
             
             imgs = imgs.to(device)
-            im_info = im_info.to(device)
 
             # Forward pass + losses
-            losses = model(imgs, im_info, gt_targets)
+            losses = model(imgs, gt_targets)
             total = sum(losses.values())
 
             opt.zero_grad()
