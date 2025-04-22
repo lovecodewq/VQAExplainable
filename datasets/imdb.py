@@ -9,6 +9,7 @@ import os
 import os.path as osp
 import PIL
 from datasets.utils.cython_bbox import bbox_overlaps
+# from cython_bbox import bbox_overlaps
 import numpy as np
 import scipy.sparse
 from fast_rcnn.config import cfg

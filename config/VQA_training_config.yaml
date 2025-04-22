@@ -1,5 +1,4 @@
-# VQA model yaml file
-
+# VQA model training config file
 batch_size: 32
 learning_rate: 0.0001
 num_epochs: 20
