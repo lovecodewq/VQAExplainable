@@ -1,45 +1,53 @@
-import os
-import sys
 
 import torch
+from torch.utils.data import DataLoader
+from torchvision.models.detection.image_list import ImageList
 
 import argparse
-import yaml
-from models.VQA_model import *
-from models.bottom_up_attention import *
-
-# from models.bottom_up_attention import BottomUpAttention
-from datasets.vg import vg
-import argparse
-import torch
 import numpy as np
 import os
-from datasets.vg_collator import VGCollator
+import sys
+import yaml
+
+from datasets.vqa_dataset import *
+from models.VQA_model import *
+
 from torch.utils.data import DataLoader
-from torchvision import models
-from torchvision.models import ResNet101_Weights
-from torchvision.models._utils import IntermediateLayerGetter
+import glob
+
+
+def dataloader(img_feature_dir, questions_file, annotations_file, batch_size):
+    # Load the dataset.
+    annotations_file_train = 'data/v2_mscoco_train2014_annotations.json'
+    annotations_file_val = 'data/v2_mscoco_val2014_annotations.json'
+
+    answer_to_idx, idx_to_answer = create_answer_idx(None, annotations_file_val)
+    print("Number of answers in val datasets: ", len(idx_to_answer))
+
+    val_dataset = VQADataset(
+        img_feature_dir,
+        questions_file,
+        annotations_file,
+        answer_to_idx,
+        # max_length=23
+    )
+    return DataLoader(val_dataset, batch_size=batch_size, shuffle=True)
 
 def train_vqa():
     parser = argparse.ArgumentParser()
     default_config_file = os.path.join(os.path.abspath(os.getcwd()), "./config/VQA_training_config.yaml")
-    dataset_path = os.path.join(os.path.abspath(os.getcwd()), "./data/visual_genome/1600-400-20")
-
     parser.add_argument("--config", type=str, default=default_config_file, help="Path to config file")
     parser.add_argument("--checkpoint", type=str, required=False)
     parser.add_argument("--output-dir", type=str, default="bottom_up_features", required=False)
     parser.add_argument("--feature_type", type=str, default="bottom_up", required=False)
     parser.add_argument("--device", type=str, default="cpu", required=False)
     parser.add_argument("--num-workers", type=int, default=8, required=False)
-    parser.add_argument('--vg_version',    default=dataset_path,
-                   help='Visual Genome version (vocabulary size)')
-    parser.add_argument('--split',         default='train',
-                   help='Dataset split to use: train/val/test/minival/minitrain')
+
     args = parser.parse_args()
     config_file = args.config
     with open(config_file, "rb") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
-    print(config)
+    print("Configs: ", config)
 
     # Hyperparamters
     num_epochs = config["num_epochs"]
@@ -51,46 +59,36 @@ def train_vqa():
     image_feature_dim = config["image_feature_dim"]
     k = config["k"] # number of feature regions
 
-    # Create output directory if it doesn't exist
-    if args.feature_type == "bottom_up":
-        bottom_up_model = BottomUpAttention()
-        # model.load_state_dict(torch.load(args.checkpoint))
-        # model.eval()
-    else:
-        raise ValueError(f"Invalid feature type: {args.feature_type}")
+    img_feature_dir_val = 'data/val2014_first1000'
+    questions_file_train = 'data/v2_OpenEnded_mscoco_train2014_questions.json'
+    annotations_file_train = 'data/v2_mscoco_train2014_annotations.json'
+    questions_file_val = 'data/v2_OpenEnded_mscoco_val2014_questions.json'
+    annotations_file_val = 'data/v2_mscoco_val2014_annotations.json'
 
-    # Load the dataset
-    dataset = vg(args.vg_version, args.split)
-    print("dataset size: ", len(dataset.image_index))
-    indices = list(range(len(dataset.image_index)))
-    collator = VGCollator(dataset, device=args.device)
-    dataloader = DataLoader(
-        indices,
-        batch_size=batch_size,
-        shuffle=True,
-        collate_fn=collator,
-        num_workers=args.num_workers,
-        pin_memory=(args.device != 'cuda')
-    )
+    val_loader = dataloader(img_feature_dir_val, questions_file_val, annotations_file_val,  batch_size)
+    print("training dataset loading finished...")
 
+    # TODO: Add validation step
+    # TODO: Check input_vocab_size
     vqa_model = VQAModel(input_vocab_size, answer_vocab_size)
     optimizer = torch.optim.Adam(vqa_model.parameters(),lr=lr)
 
+    criterion = nn.CrossEntropyLoss()
     for epoch in range(num_epochs):
         total_loss = 0.0
-        for i, (imgs, im_info, gt_targets) in enumerate(dataloader, 1):
-            if args.feature_type == "bottom_up":
-                image_features = bottom_up_model(imgs, gt_targets)
-                print("image feature: ", image_features.shape)
-                rand_question_tokens = torch.randint(0, max_token_length, (batch_size, max_token_length))
-                rand_targets = torch.randn(batch_size, answer_vocab_size)
-                logits = vqa_model(rand_question_tokens, image_features)
-                loss = vqa_loss_fn(logits, rand_targets)
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
-            print(f"average loss at epoch {epoch} is {total_loss/100}")
+        for image_features, question_embeddings, answers in val_loader:
+            # print("image_features: ", image_features.shape)
+            # print("question_embeddings: ", question_embeddings.shape)
+            # print("answers: ", answers.shape)
+            logits = vqa_model(question_embeddings, image_features[:,:,:2048])
+            # print("logits: ", logits.shape)
+            loss = criterion(logits, answers)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+            print("loss: ", loss)
+        print(f"average loss at epoch {epoch} is {total_loss/100}")
 
 if __name__ == "__main__":
     train_vqa()

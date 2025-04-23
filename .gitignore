@@ -36,5 +36,4 @@ visualization_output/
 
 checkpoints/
 
-
-
+data/*
