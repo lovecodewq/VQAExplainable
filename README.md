@@ -78,6 +78,7 @@ see [pretrained model](thirdparty/Faster-R-CNN-with-model-pretrained-on-Visual-G
 
 ## Start VQA model training
 1. **Make sure VQA v2 datasets are downloaded, unzipped and stored in ./data/**
+```
 VQA-Explainable/
     ├── data/
     │   ├── train2014/
@@ -88,7 +89,7 @@ VQA-Explainable/
     |   ├── v2_mscoco_val2014_annotations.json
     |   └── glove/
     |         └── glove.6B.50d.txt
-
+```
 2. **Update the hyperparameters in ./config/VQA_training_config.yaml**
 
 3. **Start training**
