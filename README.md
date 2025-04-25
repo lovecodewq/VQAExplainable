@@ -75,3 +75,23 @@ bash run_generate_bottom_up_features.sh
 
 ## Set up pretrained bottom up model
 see [pretrained model](thirdparty/Faster-R-CNN-with-model-pretrained-on-Visual-Genome/README.md)
+
+## Start VQA model training
+1. **Make sure VQA v2 datasets are downloaded, unzipped and stored in ./data/**
+VQA-Explainable/
+    ├── data/
+    │   ├── train2014/
+    │   ├── val2014/
+    │   ├── v2_OpenEnded_mscoco_train2014_questions.json
+    |   ├── v2_mscoco_train2014_annotations.json
+    |   ├── v2_OpenEnded_mscoco_val2014_questions.json
+    |   ├── v2_mscoco_val2014_annotations.json
+    |   └── glove/
+    |         └── glove.6B.50d.txt
+
+2. **Update the hyperparameters in ./config/VQA_training_config.yaml**
+
+3. **Start training**
+```python
+python train_VQA.py
+```

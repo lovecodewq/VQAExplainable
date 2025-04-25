@@ -18,15 +18,16 @@ def vqa_loss_fn(logits, targets):
 
 
 class QuestionEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim=300, hidden_dim=512):
+    def __init__(self, vocab_size, embed_dim=50, hidden_dim=512):
         super().__init__()
-        self.embedding = nn.Embedding(vocab_size, embed_dim)
+        # embedding is not needed if using questions embedding as input.
+        # self.embedding = nn.Embedding(vocab_size, embed_dim)
         self.gru = nn.GRU(embed_dim, hidden_dim, batch_first=True)
         
-    def forward(self, question_tokens):
+    def forward(self, questions):
         # (batch_size, 14, 300), 14: num_tokens
-        x = self.embedding(question_tokens)
-        _, h_n = self.gru(x)  # h_n: (1, batch_size, 512)
+        # x = self.embedding(questions)
+        _, h_n = self.gru(questions)  # h_n: (1, batch_size, 512)
         return h_n.squeeze(0)  # (batch_size, 512)
 
 
@@ -67,12 +68,11 @@ class VQAModel(nn.Module):
             nn.Linear(hidden_dim, answer_vocab_size)
         )
         
-    def forward(self, question_tokens, image_feats):
+    def forward(self, question_embeddings, image_feats):
         # (batch, num_tokens)
-        q_features = self.q_encoder(question_tokens)
+        q_features = self.q_encoder(question_embeddings)
         # (batch, num_features), 2048 by default
         v_attention = self.attention(image_feats, q_features)
-        
         v_embedding = self.img_linear(v_attention)
         q_embedding = self.q_linear(q_features)
 
@@ -116,7 +116,8 @@ if __name__ == "__main__":
       total_loss = 0.0
       for i in range(100):
         logits = model(question_tokens[batch_size*i : batch_size*(i+1)], \
-          image_features[batch_size*i : batch_size*(i+1)])
+            image_features[batch_size*i : batch_size*(i+1)])
+        print("logits: ", logtis.shape)
         loss = vqa_loss_fn(logits, targets[batch_size*i : batch_size*(i+1)])
         optimizer.zero_grad()
         loss.backward()
