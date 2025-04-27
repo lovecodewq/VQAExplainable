@@ -18,16 +18,23 @@ def vqa_loss_fn(logits, targets):
 
 
 class QuestionEncoder(nn.Module):
-    def __init__(self, vocab_size, embed_dim=50, hidden_dim=512):
+    def __init__(self, embed_dim=50, hidden_dim=512, encoder_type="GRU"):
         super().__init__()
         # embedding is not needed if using questions embedding as input.
         # self.embedding = nn.Embedding(vocab_size, embed_dim)
-        self.gru = nn.GRU(embed_dim, hidden_dim, batch_first=True)
+        self.encoder_type = encoder_type
+        if (encoder_type == "LSTM"):
+            self.encoder = nn.LSTM(embed_dim, hidden_dim, batch_first=True)
+        else:
+            self.encoder = nn.GRU(embed_dim, hidden_dim, batch_first=True)
         
     def forward(self, questions):
         # (batch_size, 14, 300), 14: num_tokens
         # x = self.embedding(questions)
-        _, h_n = self.gru(questions)  # h_n: (1, batch_size, 512)
+        if (self.encoder_type == "LSTM"):
+            _, (h_n, cell) = self.encoder(questions)
+        else:
+            _, h_n = self.encoder(questions)  # h_n: (1, batch_size, 512)
         return h_n.squeeze(0)  # (batch_size, 512)
 
 
@@ -54,14 +61,14 @@ class TopDownAttention(nn.Module):
 
 
 class VQAModel(nn.Module):
-    def __init__(self, vocab_size, answer_vocab_size, image_feature_dim=2048, hidden_dim=512):
+    def __init__(self, answer_vocab_size, image_feature_dim=2048, question_dim=512, embed_dim=50, hidden_dim=512):
         super().__init__()
-        self.q_encoder = QuestionEncoder(vocab_size)
-        self.attention = TopDownAttention(image_feature_dim, hidden_dim)
+        self.q_encoder = QuestionEncoder(embed_dim, question_dim)
+        self.attention = TopDownAttention(image_feature_dim, question_dim, hidden_dim)
         # image embedding
         self.img_linear = nn.Linear(image_feature_dim, hidden_dim)
         # question embedding
-        self.q_linear = nn.Linear(hidden_dim, hidden_dim)
+        self.q_linear = nn.Linear(question_dim, hidden_dim)
         self.classifier = nn.Sequential(
             nn.Linear(hidden_dim, hidden_dim),
             nn.ReLU(),
@@ -83,44 +90,44 @@ class VQAModel(nn.Module):
         return logits
 
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser()
-    default_config_file = os.path.join(os.path.abspath(os.getcwd()), "./config/VQA_training_config.yaml")
-    parser.add_argument("--config", type=str, default=default_config_file, help="Path to config file")
+# if __name__ == "__main__":
+#     parser = argparse.ArgumentParser()
+#     default_config_file = os.path.join(os.path.abspath(os.getcwd()), "./config/VQA_training_config.yaml")
+#     parser.add_argument("--config", type=str, default=default_config_file, help="Path to config file")
 
-    args = parser.parse_args()
-    config_file = args.config
-    with open(config_file, "rb") as f:
-        config = yaml.load(f, Loader=yaml.FullLoader)
-    print(config)
+#     args = parser.parse_args()
+#     config_file = args.config
+#     with open(config_file, "rb") as f:
+#         config = yaml.load(f, Loader=yaml.FullLoader)
+#     print(config)
 
-    # for training test
-    num_epochs = config["num_epochs"]
-    batch_size = config["batch_size"]
-    lr = config["learning_rate"]
+#     # for training test
+#     num_epochs = config["num_epochs"]
+#     batch_size = config["batch_size"]
+#     lr = config["learning_rate"]
 
-    input_vocab_size = config["input_vocab_size"]
-    answer_vocab_size = config["answer_vocab_size"]
-    max_token_length = config["max_token_length"]
-    image_feature_dim = config["image_feature_dim"]
-    k = config["k"] # number of feature regions
+#     input_vocab_size = config["input_vocab_size"]
+#     answer_vocab_size = config["answer_vocab_size"]
+#     max_token_length = config["max_token_length"]
+#     image_feature_dim = config["image_feature_dim"]
+#     k = config["k"] # number of feature regions
 
-    # Fake data
-    question_tokens = torch.randint(0, max_token_length, (batch_size * 100, max_token_length))
-    image_features = torch.randn(batch_size * 100, k, image_feature_dim)
-    targets = torch.randn(batch_size * 100, answer_vocab_size)
+#     # Fake data
+#     question_tokens = torch.randint(0, max_token_length, (batch_size * 100, max_token_length))
+#     image_features = torch.randn(batch_size * 100, k, image_feature_dim)
+#     targets = torch.randn(batch_size * 100, answer_vocab_size)
 
-    model = VQAModel(input_vocab_size, answer_vocab_size)
-    optimizer = torch.optim.Adam(model.parameters(),lr=lr)
-    for epoch in range(num_epochs):
-      total_loss = 0.0
-      for i in range(100):
-        logits = model(question_tokens[batch_size*i : batch_size*(i+1)], \
-            image_features[batch_size*i : batch_size*(i+1)])
-        print("logits: ", logtis.shape)
-        loss = vqa_loss_fn(logits, targets[batch_size*i : batch_size*(i+1)])
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-        total_loss += loss.item()
-      print(f"average loss at epoch {epoch} is {total_loss/100}")
+#     model = VQAModel(input_vocab_size, answer_vocab_size)
+#     optimizer = torch.optim.Adam(model.parameters(),lr=lr)
+#     for epoch in range(num_epochs):
+#       total_loss = 0.0
+#       for i in range(100):
+#         logits = model(question_tokens[batch_size*i : batch_size*(i+1)], \
+#             image_features[batch_size*i : batch_size*(i+1)])
+#         print("logits: ", logtis.shape)
+#         loss = vqa_loss_fn(logits, targets[batch_size*i : batch_size*(i+1)])
+#         optimizer.zero_grad()
+#         loss.backward()
+#         optimizer.step()
+#         total_loss += loss.item()
+#       print(f"average loss at epoch {epoch} is {total_loss/100}")
