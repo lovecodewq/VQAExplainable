@@ -1,14 +1,11 @@
 # VQA model training config file
-batch_size: 1
+batch_size: 64
 learning_rate: 0.0001
 num_epochs: 20
 weight_decay: 0.00001
 
-input_vocab_size: 30000
-answer_vocab_size: 30000
-embedding_size: 300
+question_dim: 1024
 hidden_dim: 512
-image_feature_dim: 2048
+image_feature_dim: 2052
 
 max_token_length: 14
-k: 36 # number of image regions
