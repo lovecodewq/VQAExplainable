@@ -1,5 +1,7 @@
 #!/bin/bash
 # train_bottom_up.sh - Script to train the Bottom-Up Attention model
+root_dir=$(pwd)/..
+export PYTHONPATH=$PYTHONPATH:$root_dir/thirdparty
 
 # Default parameters
 VG_VERSION="1600-400-20"

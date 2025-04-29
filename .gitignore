@@ -37,3 +37,5 @@ visualization_output/
 checkpoints/
 
 data/*
+
+*.pkl
