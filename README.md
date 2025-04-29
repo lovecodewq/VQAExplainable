@@ -22,7 +22,6 @@ Our goal is not only to maximize answer accuracy but also to expose the model's 
 
     VQA-Explainable/
     ├── bottom_up_train/         # Training scripts for bottom-up attention
-    ├── fine_tuning/             # Fine-tuning scripts
     ├── vqa_train/               # VQA model training
     ├── config/                  # Configuration files
     ├── data/                    # Dataset storage
