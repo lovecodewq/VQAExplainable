@@ -1,6 +1,6 @@
 # 1 Generating Visual Question Answers with Enhanced Reasoning (VisionQuest)
 
-**Course:** CS 7643 Final Project  
+**Course:** CS 7643 Final Project  
 **Team:** VisionQuest  
 **Members:** Feiyi Jiang, Minyue Jin, Wenqiang Li, Bochuan Lyu
 
@@ -14,69 +14,64 @@ Visual Question Answering (VQA) combines computer vision and natural language pr
 - Explore **advanced** pre-trained multimodal models (e.g., BLIP, Visual Instruction Tuning) and fine‑tune them using LoRA.  
 - Enhance **reasoning** by generating concise textual explanations and visualizing attention maps with Grad‑CAM and Finer‑CAM.  
 
-Our goal is not only to maximize answer accuracy but also to expose the model’s decision‑making process for better interpretability.
+Our goal is not only to maximize answer accuracy but also to expose the model's decision‑making process for better interpretability.
 
 ---
 
 ## 3 Repository Structure
 
     VQA-Explainable/
-    ├── data/                    # Data download scripts or small sample files
-    ├── notebooks/               # Jupyter notebooks for experiments
-    ├── src/                     # Source code
-    │   ├── dataset/             # Data loading and preprocessing
-    │   ├── models/              # Model definitions
-    │   └── utils/               # Helper functions
-    ├── tests/                   # Unit tests
-    ├── scripts/                 # CLI scripts (train.py, eval.py, infer.py)
-    ├── configs/                 # YAML/JSON config files
-    ├── docs/                    # Documentation and reports
-    ├── Dockerfile               # Container setup
-    ├── requirements.txt         # Python dependencies
-    ├── LICENSE                  # Project license
-    └── README.md                # Project overview and setup instructions
+    ├── bottom_up_train/         # Training scripts for bottom-up attention
+    ├── fine_tuning/             # Fine-tuning scripts
+    ├── vqa_train/               # VQA model training
+    ├── config/                  # Configuration files
+    ├── data/                    # Dataset storage
+    │   ├── train2014/           # MSCOCO train images
+    │   ├── val2014/             # MSCOCO validation images
+    │   └── cache/               # Cached processed data
+    ├── datasets/                # Dataset loading and processing
+    ├── docs/                    # Documentation
+    ├── models/                  # Model implementations
+    ├── scripts/                 # Utility scripts
+    ├── thirdparty/              # Third-party dependencies
+    ├── uitls/                   # Utility functions
 
 ---
 
-## 🚀 Quick Start
+## 4 Setup and Installation
 
 1. **Clone the repository**  
    ```bash
    git clone https://github.com/<your-org>/VQA-Explainable.git
    cd VQA-Explainable
    git checkout dev
+   ```
 
 2. **Install dependencies**
     ```bash
     pip install -r requirements.txt
     ```
-3. **Download and preprocess dataset of visual genome**
+
+3. **Set up Python Path**
+   To properly import from the `thirdparty` directory, add it to your Python path:
+   ```bash
+   # Add this to your .bashrc or .zshrc
+   export PYTHONPATH=$PYTHONPATH:/path/to/your/VQA-Explainable/thirdparty
+   ```
+   Or add this at the beginning of your main scripts:
+   ```python
+   import sys
+   import os
+   sys.path.append(os.path.join(os.path.dirname(__file__), 'thirdparty'))
+   ```
+
+4. **Download and preprocess Visual Genome dataset**
     ```bash
     bash scripts/setup_vg_data.sh
     ```
 
-## Testing
+## 5 Data Setup
 
-1. **Test vg dataset by visualization**
-    ```python
-    python tests/test_vg_dataset_single.py
-    ```
-
-## Train Bottom Up Attention
-```bash
-bash run_train_bottom_up.sh
-```
-**Note**: add -d to specify device, default device is cpu
-
-## Generate bottom up features
-```bash
-bash run_generate_bottom_up_features.sh
-```
-
-## Set up pretrained bottom up model
-see [pretrained model](thirdparty/Faster-R-CNN-with-model-pretrained-on-Visual-Genome/README.md)
-
-## Start VQA model training
 1. **Make sure VQA v2 datasets are downloaded, unzipped and stored in ./data/**
 ```
 VQA-Explainable/
@@ -90,9 +85,28 @@ VQA-Explainable/
     |   └── glove/
     |         └── glove.6B.50d.txt
 ```
-2. **Update the hyperparameters in ./config/VQA_training_config.yaml**
 
-3. **Start training**
-```python
-python train_VQA.py
+## 6 Training
+
+### Bottom-Up Attention
+```bash
+bash bottom_up_train/run_train_bottom_up.sh
 ```
+**Note**: add -d to specify device, default device is cpu
+
+### Generate Bottom-Up Features
+```bash
+bash bottom_up_train/run_generate_bottom_up_features.sh
+```
+
+### Set up Pretrained Bottom-Up Model
+See [pretrained model](thirdparty/Faster-R-CNN-with-model-pretrained-on-Visual-Genome/README.md)
+
+### VQA Model Training
+1. **Update hyperparameters**
+   Edit `./config/VQA_training_config.yaml` to set your desired parameters
+
+2. **Start training**
+   ```python
+   python vqa_train/train_VQA.py
+   ```
